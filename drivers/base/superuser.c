@@ -43,14 +43,14 @@ static char __user *sh_user_path(void)
 	return userspace_stack_buffer(sh_path, sizeof(sh_path));
 }
 
-static long(*old_newfstatat)(int dfd, const char __user *filename,
+static long(*old_fstatat64)(int dfd, const char __user *filename,
 			     struct stat *statbuf, int flag);
-static long new_newfstatat(int dfd, const char __user *filename,
+static long new_fstatat64(int dfd, const char __user *filename,
 			   struct stat __user *statbuf, int flag)
 {
 	if (!is_su(filename))
-		return old_newfstatat(dfd, filename, statbuf, flag);
-	return old_newfstatat(dfd, sh_user_path(), statbuf, flag);
+		return old_fstatat64(dfd, filename, statbuf, flag);
+	return old_fstatat64(dfd, sh_user_path(), statbuf, flag);
 }
 
 static long(*old_faccessat)(int dfd, const char __user *filename, int mode);
@@ -130,7 +130,7 @@ static int superuser_init(void)
 	pr_err("This one is not safe to use.\n");
 	pr_err("WARNING WARNING WARNING WARNING WARNING\n");
 
-	read_and_replace_syscall(newfstatat);
+	read_and_replace_syscall(fstatat64);
 	read_and_replace_syscall(faccessat);
 	read_and_replace_syscall(execve);
 
