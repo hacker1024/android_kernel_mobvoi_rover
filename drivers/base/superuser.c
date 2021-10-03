@@ -21,7 +21,12 @@
 
 static bool is_su(const char __user *filename)
 {
+#ifndef CONFIG_ASSISTED_SUPERUSER_HIDE_SU
 	static const char su_path[] = "/system/bin/su";
+#else
+	static const char su_path[] = "/system/bin/xu";
+#endif
+
 	char ufn[sizeof(su_path)];
 
 	return likely(!copy_from_user(ufn, filename, sizeof(ufn))) &&

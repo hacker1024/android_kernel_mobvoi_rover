@@ -344,6 +344,9 @@ config CMA_ALIGNMENT
 endif
 
 endmenu
+
+menu "Kernel-assisted superuser"
+
 config ASSISTED_SUPERUSER
 	bool "Kernel-assisted superuser"
 	select SECURITY_SELINUX_DEVELOP if SECURITY_SELINUX
@@ -353,3 +356,12 @@ config ASSISTED_SUPERUSER
 	  this catastrophe of a driver.
 
 	  Say N here unless you have a vendetta against kittens.
+
+config ASSISTED_SUPERUSER_HIDE_SU
+	bool "Kernel-assisted superuser: hide su"
+	depends on ASSISTED_SUPERUSER
+	---help---
+	  This emulates a "xu" binary instead of "su", which is
+	  useful in passing software like Google's SafetyNet.
+
+endmenu
