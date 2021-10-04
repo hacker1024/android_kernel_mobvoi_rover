@@ -53,6 +53,15 @@ config ANDROID_LMK_NOTIFY_TRIGGER
 	a set threshold. The threshold is set by the new module parameter
 	"/sys/module/lowmemorykiller/parameters/notify_trigger".
 
+config ANDROID_TIMED_OUTPUT
+	bool "Timed output class driver"
+	default y
+
+config ANDROID_TIMED_GPIO
+	tristate "Android timed gpio driver"
+	depends on GPIOLIB && ANDROID_TIMED_OUTPUT
+	default n
+
 source "drivers/staging/android/ion/Kconfig"
 
 endif # if ANDROID
