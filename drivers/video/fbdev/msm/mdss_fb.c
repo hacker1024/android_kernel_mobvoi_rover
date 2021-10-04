@@ -54,6 +54,7 @@
 #include "mdss_mdp.h"
 #include "mdp3_ctrl.h"
 #include "mdss_sync.h"
+#include "mdss_dsi.h"
 
 #ifdef CONFIG_FB_MSM_TRIPLE_BUFFER
 #define MDSS_FB_NUM 3
@@ -83,6 +84,7 @@
 
 static struct fb_info *fbi_list[MAX_FBI_LIST];
 static int fbi_list_index;
+static int lcd_loadswitch_flag;
 
 static u32 mdss_fb_pseudo_palette[16] = {
 	0x00000000, 0xffffffff, 0xffffffff, 0xffffffff,
@@ -281,6 +283,7 @@ static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 				      enum led_brightness value)
 {
 	struct msm_fb_data_type *mfd = dev_get_drvdata(led_cdev->dev->parent);
+	struct mdss_panel_data *pdata;
 	u64 bl_lvl;
 
 	if (mfd->boot_notification_led) {
@@ -290,6 +293,20 @@ static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 
 	if (value > mfd->panel_info->brightness_max)
 		value = mfd->panel_info->brightness_max;
+
+	pdata = dev_get_platdata(&mfd->pdev->dev);
+	if (pdata && pdata->set_boost_mode) {
+		if (value == mfd->panel_info->brightness_max && !pdata->boost) {
+			pdata->set_boost_mode(pdata, 1);
+			pdata->boost = 1;
+			pr_debug("%s: Boost mode %d\n", __func__, pdata->boost);
+		} else if (value != mfd->panel_info->brightness_max &&
+			   pdata->boost) {
+			pdata->set_boost_mode(pdata, 0);
+			pdata->boost = 0;
+			pr_debug("%s: Boost mode %d\n", __func__, pdata->boost);
+		}
+	}
 
 	/* This maps android backlight level 0 to 255 into
 	 * driver backlight level 0 to bl_max with rounding
@@ -905,12 +922,134 @@ static ssize_t mdss_fb_get_persist_mode(struct device *dev,
 	return ret;
 }
 
+static ssize_t msm_fb_lcd_loadswitch_off(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t len)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct mdss_panel_data *pdata;
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+	int disp_en_gpio = -1;
+	u32 enable;
+
+	if (!mfd) {
+		pr_err("%s: mfd is NULL!\n", __func__);
+		return len;
+	}
+
+	if (kstrtouint(buf, 0, &enable)) {
+		pr_err("kstrtouint buf error!\n");
+		return len;
+	}
+
+	pr_warn("%s: enable: %d\n", __func__, enable);
+	pdata = dev_get_platdata(&mfd->pdev->dev);
+	if (pdata) {
+		ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
+					panel_data);
+		disp_en_gpio = ctrl_pdata->disp_en_gpio;
+	} else {
+		pr_err("no panel connected\n");
+		return -EINVAL;
+	}
+
+	if (gpio_is_valid(disp_en_gpio)) {
+		if (enable) {
+			if (gpio_direction_output(disp_en_gpio, 1)) {
+				pr_err("%s: disp_en_gpio set error\n",
+						__func__);
+				return -EINVAL;
+			} else {
+				gpio_set_value(disp_en_gpio, 1);
+				pr_debug("%s: set disp_en_gpio 1\n", __func__);
+			}
+		} else {
+			gpio_set_value(disp_en_gpio, 0);
+			pr_debug("%s: set disp_en_gpio 0\n", __func__);
+		}
+	} else {
+		pr_err("%s: disp_en_gpio invalid(%d)\n", __func__,
+				disp_en_gpio);
+	}
+
+	lcd_loadswitch_flag = !enable;
+	pr_debug("%s: lcd_loadswitch_flag: %d\n", __func__,
+			lcd_loadswitch_flag);
+
+	return len;
+}
+
 static ssize_t mdss_fb_idle_pc_notify(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	return scnprintf(buf, PAGE_SIZE, "idle power collapsed\n");
 }
 
+static ssize_t mdss_fb_change_boost_mode(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t len)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct mdss_panel_data *pdata;
+	u32 boost_mode;
+
+	if (!mfd) {
+		pr_err("%s: mfd is NULL!\n", __func__);
+		return len;
+	}
+
+	if (kstrtouint(buf, 0, &boost_mode)) {
+		pr_err("kstrtouint buf error!\n");
+		return len;
+	}
+
+	pdata = dev_get_platdata(&mfd->pdev->dev);
+	if (!pdata) {
+		pr_err("%s: no panel connected!\n", __func__);
+		return -EINVAL;
+	}
+
+	mutex_lock(&mfd->mdss_sysfs_lock);
+	if (mdss_panel_is_power_off(mfd->panel_power_state)) {
+		pdata->boost = boost_mode;
+		goto end;
+	}
+
+	mutex_lock(&mfd->bl_lock);
+
+	if (pdata->set_boost_mode)
+		pdata->set_boost_mode(pdata, boost_mode);
+
+	mutex_unlock(&mfd->bl_lock);
+
+	pr_debug("%s: Boost mode %d\n", __func__, boost_mode);
+	pdata->boost = boost_mode;
+
+end:
+	mutex_unlock(&mfd->mdss_sysfs_lock);
+	return len;
+}
+
+static ssize_t mdss_fb_get_boost_mode(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct mdss_panel_data *pdata;
+	int ret;
+
+	pdata = dev_get_platdata(&mfd->pdev->dev);
+	if (!pdata) {
+		pr_err("%s: no panel connected!\n", __func__);
+		return -EINVAL;
+	}
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n", pdata->boost);
+
+	return ret;
+}
+
+static DEVICE_ATTR(msm_fb_lcd_loadswitch, S_IRUGO | S_IWUSR, NULL,
+					msm_fb_lcd_loadswitch_off);
 static DEVICE_ATTR(msm_fb_type, 0444, mdss_fb_get_type, NULL);
 static DEVICE_ATTR(msm_fb_split, 0644, mdss_fb_show_split,
 					mdss_fb_store_split);
@@ -932,8 +1071,11 @@ static DEVICE_ATTR(measured_fps, 0664,
 static DEVICE_ATTR(msm_fb_persist_mode, 0644,
 	mdss_fb_get_persist_mode, mdss_fb_change_persist_mode);
 static DEVICE_ATTR(idle_power_collapse, 0444, mdss_fb_idle_pc_notify, NULL);
+static DEVICE_ATTR(hbm_mode, 0664,
+	mdss_fb_get_boost_mode, mdss_fb_change_boost_mode);
 
 static struct attribute *mdss_fb_attrs[] = {
+	&dev_attr_msm_fb_lcd_loadswitch.attr,
 	&dev_attr_msm_fb_type.attr,
 	&dev_attr_msm_fb_split.attr,
 	&dev_attr_show_blank_event.attr,
@@ -947,6 +1089,7 @@ static struct attribute *mdss_fb_attrs[] = {
 	&dev_attr_measured_fps.attr,
 	&dev_attr_msm_fb_persist_mode.attr,
 	&dev_attr_idle_power_collapse.attr,
+	&dev_attr_hbm_mode.attr,
 	NULL,
 };
 
@@ -2031,6 +2174,48 @@ error:
 	return ret;
 }
 
+int mdss_fb_mutex_with_ext_ctrl(struct fb_info *info)
+{
+	struct mdss_panel_data *pdata;
+	struct msm_fb_data_type *mfd;
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+	int disp_mutex_gpio = -1;
+	int mutex_timeout, mutex_cnt;
+	int value;
+	int cnt;
+
+	mfd = (struct msm_fb_data_type *)info->par;
+	pdata = dev_get_platdata(&mfd->pdev->dev);
+	if (pdata) {
+		ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
+				panel_data);
+		disp_mutex_gpio = ctrl_pdata->disp_mutex_gpio;
+	} else {
+		pr_err("no panel connected\n");
+	}
+
+	mutex_timeout = ctrl_pdata->disp_mutex_timeout;
+	mutex_cnt = ctrl_pdata->disp_mutex_cnt;
+	if (gpio_is_valid(disp_mutex_gpio)) {
+		gpio_direction_input(disp_mutex_gpio);
+		msleep(30);
+		for (cnt = 0; cnt < mutex_cnt; cnt++) {
+			value = gpio_get_value(disp_mutex_gpio);
+
+			if (value) {
+				pr_info("%s: sleep to wait disp_mutex_gpio, cnt=%d\n", __func__, cnt);
+				msleep(mutex_timeout * 2);
+			}
+			else
+				break;
+		}
+		if (cnt >= mutex_cnt) {
+			pr_err("disp mutex waiting failed!\n");
+		}
+	}
+
+	return 0;
+}
 static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 			     int op_enable)
 {
@@ -2038,12 +2223,24 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 	int ret = 0;
 	int cur_power_state, req_power_state = MDSS_PANEL_POWER_OFF;
 	char trace_buffer[32];
+	struct mdss_panel_data *pdata;
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+	int disp_en_gpio = -1;
 
 	if (!mfd || !op_enable)
 		return -EPERM;
 
 	if (mfd->dcm_state == DCM_ENTER)
 		return -EPERM;
+
+	pdata = dev_get_platdata(&mfd->pdev->dev);
+	if (pdata) {
+		ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
+					panel_data);
+		disp_en_gpio = ctrl_pdata->disp_en_gpio;
+	} else {
+		pr_err("no panel connected\n");
+	}
 
 	pr_debug("%pS mode:%d\n", __builtin_return_address(0),
 		blank_mode);
@@ -2083,6 +2280,31 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 
 	switch (blank_mode) {
 	case FB_BLANK_UNBLANK:
+		/*
+		 * if ext gpio is high, block unblank hundreds miliseconds. Do not
+		 * return false here to void that ext gpio is alway high unexpectedly
+		 * which cause the disp cannot be unblanked.
+		 */
+		mdss_fb_mutex_with_ext_ctrl(info);
+
+		if (!lcd_loadswitch_flag) {
+			if (gpio_is_valid(disp_en_gpio)) {
+				if (gpio_direction_output(disp_en_gpio, 1)) {
+					pr_err("%s: disp_en_gpio set error\n",
+							__func__);
+				} else {
+					gpio_set_value(disp_en_gpio, 1);
+					pr_debug("%s: set disp_en_gpio 1\n",
+							__func__);
+				}
+			 } else {
+				pr_err("%s: disp_en_gpio invalid(%d)\n",
+						__func__, disp_en_gpio);
+			 }
+		} else {
+			return -EPERM;
+		}
+
 		pr_debug("unblank called. cur pwr state=%d\n", cur_power_state);
 		ret = mdss_fb_blank_unblank(mfd);
 		break;
@@ -2097,8 +2319,27 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 		ret = mdss_fb_blank_blank(mfd, req_power_state);
 		break;
 	case BLANK_FLAG_LP:
+		mdss_fb_mutex_with_ext_ctrl(info);
 		req_power_state = MDSS_PANEL_POWER_LP1;
 		pr_debug(" power mode requested\n");
+
+		if (!lcd_loadswitch_flag) {
+			if (gpio_is_valid(disp_en_gpio)) {
+				if (gpio_direction_output(disp_en_gpio, 1)) {
+					pr_err("%s: disp_en_gpio set error\n",
+							__func__);
+				} else {
+					gpio_set_value(disp_en_gpio, 1);
+					pr_debug("%s: set disp_en_gpio 1\n",
+							__func__);
+				}
+			 } else {
+				pr_err("%s: disp_en_gpio invalid(%d)\n",
+						__func__, disp_en_gpio);
+			 }
+		} else {
+			return -EPERM;
+		}
 
 		/*
 		 * If low power mode is requested when panel is already off,
@@ -2119,6 +2360,16 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 		req_power_state = MDSS_PANEL_POWER_OFF;
 		pr_debug("blank powerdown called\n");
 		ret = mdss_fb_blank_blank(mfd, req_power_state);
+		if (gpio_is_valid(disp_en_gpio)) {
+			gpio_set_value(disp_en_gpio, 0);
+			pr_debug("%s: set disp_en_gpio 0\n", __func__);
+			/* Cowork with gpio_request(ctrl_pdata->disp_en_gpio) in
+			 * mdss_dsi_panel.c:mdss_dsi_request_gpios() */
+			gpio_free(ctrl_pdata->disp_en_gpio);
+		} else {
+			pr_err("%s: disp_en_gpio invalid(%d)\n", __func__,
+					disp_en_gpio);
+		}
 		break;
 	}
 

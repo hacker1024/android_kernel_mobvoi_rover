@@ -437,6 +437,9 @@ struct mdss_dsi_ctrl_pdata {
 	int disp_te_gpio;
 	int rst_gpio;
 	int disp_en_gpio;
+	int disp_mutex_gpio;
+	int disp_mutex_cnt;
+	int disp_mutex_timeout;
 	int bklt_en_gpio;
 	int vdd_ext_gpio;
 	int mode_gpio;
@@ -485,6 +488,8 @@ struct mdss_dsi_ctrl_pdata {
 	struct dsi_panel_cmds status_cmds;
 	struct dsi_panel_cmds idle_on_cmds; /* for lp mode */
 	struct dsi_panel_cmds idle_off_cmds;
+	struct dsi_panel_cmds boost_mode_in_cmds;
+	struct dsi_panel_cmds boost_mode_out_cmds;
 	u32 *status_valid_params;
 	u32 *status_cmds_rlen;
 	u32 *status_value;

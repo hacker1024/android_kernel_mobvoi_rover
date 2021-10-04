@@ -299,6 +299,38 @@ static bool mdss_dsi_panel_get_idle_mode(struct mdss_panel_data *pdata)
 	return ctrl->idle;
 }
 
+static void mdss_dsi_panel_set_boost_mode(struct mdss_panel_data *pdata,
+							int enable)
+{
+	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
+
+	if (pdata == NULL) {
+		pr_err("%s: Invalid input data\n", __func__);
+		return;
+	}
+
+	ctrl = container_of(pdata, struct mdss_dsi_ctrl_pdata, panel_data);
+
+	pr_info("%s: boost mode (%d->%d)\n", __func__, pdata->boost, enable);
+
+	MDSS_XLOG(pdata->boost, enable);
+	if (enable) {
+		if (ctrl->boost_mode_in_cmds.cmd_cnt) {
+			mdss_dsi_panel_cmds_send(ctrl,
+				&ctrl->boost_mode_in_cmds, CMD_REQ_COMMIT);
+			pdata->boost = true;
+			pr_debug("Boost mode on\n");
+		}
+	} else {
+		if (ctrl->boost_mode_out_cmds.cmd_cnt) {
+			mdss_dsi_panel_cmds_send(ctrl,
+				&ctrl->boost_mode_out_cmds, CMD_REQ_COMMIT);
+			pdata->boost = false;
+			pr_debug("Boost mode off\n");
+		}
+	}
+}
+
 static int mdss_dsi_request_gpios(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
 	int rc = 0;
@@ -310,6 +342,13 @@ static int mdss_dsi_request_gpios(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 			pr_err("request disp_en gpio failed, rc=%d\n",
 				       rc);
 			goto disp_en_gpio_err;
+		}
+	}
+	if (gpio_is_valid(ctrl_pdata->disp_mutex_gpio)) {
+		rc = gpio_request(ctrl_pdata->disp_mutex_gpio, "disp_mutex");
+		if (rc) {
+			pr_err("request disp_mutex gpio failed, rc=%d\n", rc);
+			goto disp_mutex_gpio_err;
 		}
 	}
 	rc = gpio_request(ctrl_pdata->rst_gpio, "disp_rst_n");
@@ -355,6 +394,9 @@ vdd_en_gpio_err:
 bklt_en_gpio_err:
 	gpio_free(ctrl_pdata->rst_gpio);
 rst_gpio_err:
+	if (gpio_is_valid(ctrl_pdata->disp_mutex_gpio))
+		gpio_free(ctrl_pdata->disp_mutex_gpio);
+disp_mutex_gpio_err:
 	if (gpio_is_valid(ctrl_pdata->disp_en_gpio))
 		gpio_free(ctrl_pdata->disp_en_gpio);
 disp_en_gpio_err:
@@ -439,6 +481,8 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 			return rc;
 		}
 		if (!pinfo->cont_splash_enabled) {
+			/* Delete en_gpio ctrl here, Due to it's controlled when
+			 * fb blank and unblank in mdss_fb.c
 			if (gpio_is_valid(ctrl_pdata->disp_en_gpio)) {
 				rc = gpio_direction_output(
 					ctrl_pdata->disp_en_gpio, 1);
@@ -449,7 +493,7 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 				}
 				gpio_set_value((ctrl_pdata->disp_en_gpio), 1);
 				usleep_range(100, 110);
-			}
+			} */
 
 			if (pdata->panel_info.rst_seq_len) {
 				rc = gpio_direction_output(ctrl_pdata->rst_gpio,
@@ -517,11 +561,16 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 
 			gpio_free(ctrl_pdata->bklt_en_gpio);
 		}
+		/* Delete en_gpio ctrl here, Due to it's controlled when
+		 * fb blank and unblank in mdss_fb.c
 		if (gpio_is_valid(ctrl_pdata->disp_en_gpio)) {
 			gpio_set_value((ctrl_pdata->disp_en_gpio), 0);
 			usleep_range(100, 110);
 			gpio_free(ctrl_pdata->disp_en_gpio);
-		}
+		} */
+		if (gpio_is_valid(ctrl_pdata->disp_mutex_gpio))
+			gpio_free(ctrl_pdata->disp_mutex_gpio);
+
 		gpio_set_value((ctrl_pdata->rst_gpio), 0);
 		gpio_free(ctrl_pdata->rst_gpio);
 		if (gpio_is_valid(ctrl_pdata->mode_gpio))
@@ -2938,6 +2987,14 @@ static int mdss_panel_parse_dt(struct device_node *np,
 		"qcom,mdss-dsi-idle-off-command",
 		"qcom,mdss-dsi-idle-off-command-state");
 
+	mdss_dsi_parse_dcs_cmds(np, &ctrl_pdata->boost_mode_in_cmds,
+		"qcom,mdss-dsi-boost-mode-in-command",
+		"qcom,mdss-dsi-boost-mode-in-command-state");
+
+	mdss_dsi_parse_dcs_cmds(np, &ctrl_pdata->boost_mode_out_cmds,
+		"qcom,mdss-dsi-boost-mode-out-command",
+		"qcom,mdss-dsi-boost-mode-out-command-state");
+
 	rc = of_property_read_u32(np, "qcom,mdss-dsi-idle-fps", &tmp);
 	pinfo->mipi.frame_rate_idle = (!rc ? tmp : 60);
 
@@ -3015,5 +3072,6 @@ int mdss_dsi_panel_init(struct device_node *node,
 			mdss_dsi_panel_apply_display_setting;
 	ctrl_pdata->switch_mode = mdss_dsi_panel_switch_mode;
 	ctrl_pdata->panel_data.get_idle = mdss_dsi_panel_get_idle_mode;
+	ctrl_pdata->panel_data.set_boost_mode = mdss_dsi_panel_set_boost_mode;
 	return 0;
 }
