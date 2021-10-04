@@ -50,7 +50,7 @@ static struct smb_params v1_params = {
 		.name	= "usb input current limit",
 		.reg	= USBIN_CURRENT_LIMIT_CFG_REG,
 		.min_u	= 0,
-		.max_u	= 4800000,
+		.max_u	= 500000,
 		.step_u	= 25000,
 	},
 	.icl_stat		= {
@@ -982,6 +982,18 @@ static int smb2_init_dc_psy(struct smb2 *chip)
  * BATT PSY REGISTRATION *
  *************************/
 
+#if defined(CONFIG_NANOHUB_MAX1726X)
+extern int max1726x_powersupply_init(struct smb_charger *chg,
+				     struct power_supply **pp);
+static int smb2_init_batt_psy(struct smb2 *chip)
+{
+	struct smb_charger *chg = &chip->chg;
+	int rc = 0;
+
+	rc = max1726x_powersupply_init(chg, &chg->batt_psy);
+	return rc;
+}
+#else /* CONFIG_NANOHUB_MAX1726X */
 static enum power_supply_property smb2_batt_props[] = {
 	POWER_SUPPLY_PROP_INPUT_SUSPEND,
 	POWER_SUPPLY_PROP_STATUS,
@@ -1016,6 +1028,7 @@ static enum power_supply_property smb2_batt_props[] = {
 	POWER_SUPPLY_PROP_CYCLE_COUNT,
 	POWER_SUPPLY_PROP_FCC_STEPPER_ENABLE,
 };
+#endif /* CONFIG_NANOHUB_MAX1726X */
 
 static int smb2_batt_get_prop(struct power_supply *psy,
 		enum power_supply_property psp,
@@ -1149,6 +1162,15 @@ static int smb2_batt_get_prop(struct power_supply *psy,
 	return 0;
 }
 
+#if defined(CONFIG_NANOHUB_MAX1726X)
+int max1726x_get_smb2_batt_prop(struct power_supply *psy,
+		enum power_supply_property psp,
+		union power_supply_propval *val)
+{
+	return smb2_batt_get_prop(psy, psp, val);
+}
+EXPORT_SYMBOL_GPL(max1726x_get_smb2_batt_prop);
+#else /* CONFIG_NANOHUB_MAX1726X */
 static int smb2_batt_set_prop(struct power_supply *psy,
 		enum power_supply_property prop,
 		const union power_supply_propval *val)
@@ -1295,6 +1317,7 @@ static int smb2_init_batt_psy(struct smb2 *chip)
 
 	return rc;
 }
+#endif /* CONFIG_NANOHUB_MAX1726X */
 
 /******************************
  * VBUS REGULATOR REGISTRATION *
@@ -1660,8 +1683,15 @@ static int smb2_init_hw(struct smb2 *chip)
 	rc = smblib_masked_write(chg, USBIN_AICL_OPTIONS_CFG_REG,
 			USBIN_AICL_START_AT_MAX_BIT
 				| USBIN_AICL_ADC_EN_BIT, 0);
+
 	if (rc < 0) {
 		dev_err(chg->dev, "Couldn't configure AICL rc=%d\n", rc);
+		return rc;
+	}
+
+	rc = smblib_masked_write(chg, USBIN_AICL_OPTIONS_CFG_REG,USBIN_AICL_RERUN_EN_BIT,USBIN_AICL_RERUN_EN_BIT);
+	if (rc < 0) {
+		dev_err(chg->dev, "Couldn't configure AICL rerun enable rc=%d\n", rc);
 		return rc;
 	}
 
